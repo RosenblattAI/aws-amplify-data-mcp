@@ -1,0 +1,22 @@
+{
+  "name": "aws-amplify-data-mcp",
+  "type": "module",
+  "bin": {
+    "aws-amplify-data-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod 775 build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "dependencies": {
+    "@aws-amplify/auth": "^5.6.5",
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "typescript": "^5.8.3"
+  }
+}
