@@ -99,6 +99,9 @@ const server = new McpServer({
 // Current authentication state
 let currentUser = null;
 let idToken = null;
+// Store credentials globally for re-login purposes
+let storedUsername = null;
+let storedPassword = null;
 // Helper function to make authenticated GraphQL requests
 async function executeGraphQLQuery(query, variables = {}) {
     const headers = {
@@ -117,14 +120,72 @@ async function executeGraphQLQuery(query, variables = {}) {
                 variables,
             }),
         });
+        // Check for 401 Unauthorized status specifically
+        if (response.status === 401) {
+            console.error("Received 401 Unauthorized, attempting to refresh authentication");
+            return await handleAuthRefresh(query, variables);
+        }
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        return await response.json();
+        const result = await response.json();
+        // Also check response for auth errors
+        if (result.errors &&
+            result.errors.some((e) => e.errorType === "UnauthorizedException" ||
+                e.message?.includes("Authentication failed") ||
+                e.message?.includes("token is expired"))) {
+            console.error("Authentication error in GraphQL response");
+            return await handleAuthRefresh(query, variables);
+        }
+        return result;
     }
     catch (error) {
         console.error("Error executing GraphQL query:", error);
         throw error;
+    }
+}
+// Separate function to handle authentication refresh and retry
+async function handleAuthRefresh(query, variables = {}) {
+    // Try to refresh session or re-login
+    if (isAuthInitialized) {
+        try {
+            console.error("Attempting to refresh session...");
+            // First try to refresh the session without parameters
+            await Auth.currentSession();
+            const session = await Auth.currentSession();
+            idToken = session.getIdToken().getJwtToken();
+            console.error("Session refreshed successfully");
+            // Retry the query with the new token
+            return executeGraphQLQuery(query, variables);
+        }
+        catch (refreshError) {
+            console.error("Session refresh failed:", refreshError);
+            // If we have stored or environment credentials, try to login again
+            const loginUsername = storedUsername || username;
+            const loginPassword = storedPassword || password;
+            if (loginUsername && loginPassword) {
+                try {
+                    console.error(`Attempting re-login for user: ${loginUsername}`);
+                    const user = await Auth.signIn(loginUsername, loginPassword);
+                    currentUser = user;
+                    const session = await Auth.currentSession();
+                    idToken = session.getIdToken().getJwtToken();
+                    console.error("Re-login successful");
+                    // Retry the query with the new token
+                    return executeGraphQLQuery(query, variables);
+                }
+                catch (loginError) {
+                    console.error("Re-login failed:", loginError);
+                    throw new Error("Authentication expired and automatic re-login failed");
+                }
+            }
+            else {
+                throw new Error("Authentication expired and no stored credentials for re-login");
+            }
+        }
+    }
+    else {
+        throw new Error("Authentication system not initialized");
     }
 }
 // Utility function to generate GraphQL fields for a model
@@ -182,6 +243,9 @@ server.tool("login", "Login with Cognito username and password", {
         // Get the current session to extract tokens
         const session = await Auth.currentSession();
         idToken = session.getIdToken().getJwtToken();
+        // Store credentials for potential re-login
+        storedUsername = username;
+        storedPassword = password;
         return {
             content: [
                 {
@@ -355,16 +419,6 @@ server.tool("run-graphql", "Execute a custom GraphQL query or mutation", {
         .optional()
         .describe("JSON string of variables for the query"),
 }, async ({ query, variables }) => {
-    if (!idToken && defaultAuthType === "AMAZON_COGNITO_USER_POOLS") {
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: "Authentication required. Please use the login tool first.",
-                },
-            ],
-        };
-    }
     try {
         // Parse variables if provided
         let variablesObj = {};
@@ -383,6 +437,8 @@ server.tool("run-graphql", "Execute a custom GraphQL query or mutation", {
                 };
             }
         }
+        // Even if not authenticated, we'll now try the request anyway
+        // as the automatic re-login will handle authentication if needed
         const result = await executeGraphQLQuery(query, variablesObj);
         return {
             content: [
@@ -471,6 +527,9 @@ async function main() {
             // Get the current session to extract tokens
             const session = await Auth.currentSession();
             idToken = session.getIdToken().getJwtToken();
+            // Store credentials for potential re-login
+            storedUsername = username;
+            storedPassword = password;
             console.error("Automatic login successful");
         }
         catch (error) {
