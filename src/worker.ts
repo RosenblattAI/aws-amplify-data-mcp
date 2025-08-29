@@ -130,45 +130,19 @@ async function handleSSEConnection(request: Request, env: Env): Promise<Response
     'Access-Control-Allow-Headers': 'Cache-Control',
   });
 
-  // Create a readable stream for SSE
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
+  // Create a simple SSE stream
   const encoder = new TextEncoder();
-
-  // Send initial MCP protocol message
-  const initMessage = {
+  
+  // Create response body with initial MCP protocol messages
+  const initMessage = JSON.stringify({
     jsonrpc: "2.0",
-    method: "initialized",
+    method: "notifications/initialized",
     params: {}
-  };
-  
-  await writer.write(encoder.encode(`data: ${JSON.stringify(initMessage)}\n\n`));
+  });
 
-  // Handle MCP protocol over SSE
-  // For a full implementation, you'd need to parse incoming SSE data
-  // and route MCP requests accordingly
-  
-  // Keep connection alive with periodic heartbeat
-  const heartbeat = setInterval(async () => {
-    try {
-      const heartbeatMessage = {
-        jsonrpc: "2.0",
-        method: "ping",
-        params: {}
-      };
-      await writer.write(encoder.encode(`data: ${JSON.stringify(heartbeatMessage)}\n\n`));
-    } catch (error) {
-      clearInterval(heartbeat);
-    }
-  }, 30000); // 30 second heartbeat
+  const body = `data: ${initMessage}\n\n`;
 
-  // Close connection after 5 minutes to prevent indefinite connections
-  setTimeout(() => {
-    clearInterval(heartbeat);
-    writer.close();
-  }, 300000);
-
-  return new Response(readable, { headers });
+  return new Response(body, { headers });
 }
 
 // Handle GraphQL proxy requests
