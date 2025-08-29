@@ -67,24 +67,22 @@ export default {
       if (url.pathname === '/sse') {
         console.log('SSE endpoint accessed:', request.method, request.headers.get('Accept'));
         
+        // Validate Origin header for security (MCP requirement)
+        const origin = request.headers.get('Origin');
+        if (origin && origin !== 'null' && !isValidOrigin(origin)) {
+          return new Response('Invalid Origin', { status: 403 });
+        }
+        
         if (request.method === 'GET') {
-          // Handle SSE connections for MCP
+          // Handle SSE connections for MCP discovery
           return handleSSEConnection(request, env);
         } else if (request.method === 'POST') {
-          // Handle MCP requests over HTTP on the SSE endpoint
+          // Handle MCP requests over SSE (per MCP spec)
           const body = await request.json();
           console.log('MCP request received:', JSON.stringify(body, null, 2));
-          const response = await handleMcpRequest(body, env);
-          console.log('MCP response:', JSON.stringify(response, null, 2));
           
-          return new Response(JSON.stringify(response), {
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-              'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
-            },
-          });
+          // Create SSE stream with MCP response
+          return handleSSEMcpRequest(request, body, env);
         }
       }
 
@@ -130,6 +128,89 @@ export default {
     }
   },
 };
+
+// Validate Origin header for security (MCP requirement)
+function isValidOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    // Allow localhost and 127.0.0.1 for local development
+    // Allow Claude Desktop origins
+    return (
+      url.hostname === 'localhost' ||
+      url.hostname === '127.0.0.1' ||
+      url.hostname.endsWith('.anthropic.com') ||
+      url.hostname.endsWith('.claude.ai') ||
+      url.protocol === 'file:' ||
+      origin === 'null' // Allow null origin for local files
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
+// Handle MCP requests over SSE (creates SSE stream with MCP response)
+async function handleSSEMcpRequest(request: Request, mcpRequest: any, env: Env): Promise<Response> {
+  // Validate Accept header
+  const accept = request.headers.get('Accept');
+  if (!accept || (!accept.includes('text/event-stream') && !accept.includes('application/json'))) {
+    return new Response('Invalid Accept header', { status: 400 });
+  }
+
+  // Create SSE response headers
+  const headers = new Headers({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
+    'Access-Control-Expose-Headers': 'Content-Type',
+  });
+
+  const encoder = new TextEncoder();
+
+  // Create SSE stream with MCP response
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        console.log('Creating SSE stream for MCP request');
+        
+        // Process the MCP request
+        const mcpResponse = await handleMcpRequest(mcpRequest, env);
+        
+        // Send the MCP response as SSE data event
+        const eventData = `data: ${JSON.stringify(mcpResponse)}\n\n`;
+        controller.enqueue(encoder.encode(eventData));
+        
+        console.log('MCP response sent via SSE:', JSON.stringify(mcpResponse, null, 2));
+        
+        // Close the stream (per MCP spec: should close after sending response)
+        controller.close();
+      } catch (error) {
+        console.error('Error in SSE MCP request:', error);
+        
+        // Send error as SSE event
+        const errorResponse = {
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: error instanceof Error ? error.message : String(error)
+          },
+          id: mcpRequest.id || null
+        };
+        
+        const eventData = `data: ${JSON.stringify(errorResponse)}\n\n`;
+        controller.enqueue(encoder.encode(eventData));
+        controller.close();
+      }
+    },
+    cancel() {
+      console.log('SSE MCP stream cancelled');
+    }
+  });
+
+  return new Response(stream, { headers });
+}
 
 // Handle SSE connections for MCP
 async function handleSSEConnection(request: Request, env: Env): Promise<Response> {
