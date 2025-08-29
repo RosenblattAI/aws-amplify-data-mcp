@@ -190,106 +190,135 @@ async function handleGraphQLProxy(request, env) {
 }
 // Handle MCP protocol requests
 async function handleMcpRequest(mcpRequest, env) {
-    const { method, params } = mcpRequest;
-    switch (method) {
-        case 'initialize':
-            return {
-                protocolVersion: '2024-11-05',
-                capabilities: {
-                    resources: {},
-                    tools: {},
-                },
-                serverInfo: {
-                    name: 'amplify-data-api-worker',
-                    version: '1.0.0',
-                },
-            };
-        case 'resources/list':
-            return {
-                resources: [
-                    {
-                        uri: "amplify://api-info",
-                        name: "Amplify API Information",
-                        description: "Information about the Amplify Data API configuration",
-                        mimeType: "application/json",
+    const { method, params, id } = mcpRequest;
+    try {
+        let result;
+        switch (method) {
+            case 'initialize':
+                result = {
+                    protocolVersion: '2024-11-05',
+                    capabilities: {
+                        resources: {},
+                        tools: {},
                     },
-                ],
-            };
-        case 'resources/read':
-            const { uri } = params;
-            if (uri === "amplify://api-info") {
-                return {
-                    contents: [
+                    serverInfo: {
+                        name: 'amplify-data-api-worker',
+                        version: '1.0.0',
+                    },
+                };
+                break;
+            case 'resources/list':
+                result = {
+                    resources: [
                         {
-                            uri,
+                            uri: "amplify://api-info",
+                            name: "Amplify API Information",
+                            description: "Information about the Amplify Data API configuration",
                             mimeType: "application/json",
-                            text: JSON.stringify({
-                                apiUrl: env.AMPLIFY_API_URL || 'not configured',
-                                region: env.AMPLIFY_REGION || 'us-east-1',
-                                hasApiKey: !!env.AMPLIFY_API_KEY,
-                                status: "configured"
-                            }, null, 2),
                         },
                     ],
                 };
-            }
-            throw new Error(`Unknown resource: ${uri}`);
-        case 'tools/list':
-            return {
-                tools: [
-                    {
-                        name: "query_amplify_api",
-                        description: "Execute a GraphQL query against the Amplify Data API",
-                        inputSchema: {
-                            type: "object",
-                            properties: {
-                                query: {
-                                    type: "string",
-                                    description: "The GraphQL query to execute",
-                                },
-                                variables: {
-                                    type: "object",
-                                    description: "Variables for the GraphQL query",
-                                },
-                            },
-                            required: ["query"],
-                        },
-                    },
-                    {
-                        name: "get_api_info",
-                        description: "Get information about the Amplify API configuration",
-                        inputSchema: {
-                            type: "object",
-                            properties: {},
-                        },
-                    },
-                ],
-            };
-        case 'tools/call':
-            const { name, arguments: args } = params;
-            switch (name) {
-                case "query_amplify_api":
-                    return await executeGraphQLQuery(args.query, args.variables || {}, env);
-                case "get_api_info":
-                    return {
-                        content: [
+                break;
+            case 'resources/read':
+                const { uri } = params;
+                if (uri === "amplify://api-info") {
+                    result = {
+                        contents: [
                             {
-                                type: "text",
+                                uri,
+                                mimeType: "application/json",
                                 text: JSON.stringify({
                                     apiUrl: env.AMPLIFY_API_URL || 'not configured',
                                     region: env.AMPLIFY_REGION || 'us-east-1',
                                     hasApiKey: !!env.AMPLIFY_API_KEY,
-                                    worker: 'aws-amplify-data-mcp',
-                                    version: '1.0.0'
+                                    status: "configured"
                                 }, null, 2),
                             },
                         ],
                     };
-                default:
-                    throw new Error(`Unknown tool: ${name}`);
-            }
-        default:
-            throw new Error(`Unknown method: ${method}`);
+                }
+                else {
+                    throw new Error(`Unknown resource: ${uri}`);
+                }
+                break;
+            case 'tools/list':
+                result = {
+                    tools: [
+                        {
+                            name: "query_amplify_api",
+                            description: "Execute a GraphQL query against the Amplify Data API",
+                            inputSchema: {
+                                type: "object",
+                                properties: {
+                                    query: {
+                                        type: "string",
+                                        description: "The GraphQL query to execute",
+                                    },
+                                    variables: {
+                                        type: "object",
+                                        description: "Variables for the GraphQL query",
+                                    },
+                                },
+                                required: ["query"],
+                            },
+                        },
+                        {
+                            name: "get_api_info",
+                            description: "Get information about the Amplify API configuration",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                    ],
+                };
+                break;
+            case 'tools/call':
+                const { name, arguments: args } = params;
+                switch (name) {
+                    case "query_amplify_api":
+                        result = await executeGraphQLQuery(args.query, args.variables || {}, env);
+                        break;
+                    case "get_api_info":
+                        result = {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: JSON.stringify({
+                                        apiUrl: env.AMPLIFY_API_URL || 'not configured',
+                                        region: env.AMPLIFY_REGION || 'us-east-1',
+                                        hasApiKey: !!env.AMPLIFY_API_KEY,
+                                        worker: 'aws-amplify-data-mcp',
+                                        version: '1.0.0'
+                                    }, null, 2),
+                                },
+                            ],
+                        };
+                        break;
+                    default:
+                        throw new Error(`Unknown tool: ${name}`);
+                }
+                break;
+            default:
+                throw new Error(`Unknown method: ${method}`);
+        }
+        // Return JSON-RPC 2.0 success response
+        return {
+            jsonrpc: "2.0",
+            result: result,
+            id: id
+        };
+    }
+    catch (error) {
+        // Return JSON-RPC 2.0 error response
+        return {
+            jsonrpc: "2.0",
+            error: {
+                code: -32000,
+                message: error instanceof Error ? error.message : String(error)
+            },
+            id: id
+        };
     }
 }
 // Helper function to execute GraphQL queries
