@@ -1,0 +1,351 @@
+// Cloudflare Worker entry point for AWS Amplify Data MCP Server
+// Simplified version that works with Cloudflare Workers runtime
+// Worker must export a default handler
+export default {
+    async fetch(request, env, ctx) {
+        // Handle CORS preflight
+        if (request.method === 'OPTIONS') {
+            return new Response(null, {
+                status: 200,
+                headers: {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                },
+            });
+        }
+        try {
+            // Parse the request
+            const url = new URL(request.url);
+            if (url.pathname === '/health') {
+                return new Response(JSON.stringify({
+                    status: 'healthy',
+                    worker: 'aws-amplify-data-mcp',
+                    version: '1.0.0'
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                    },
+                });
+            }
+            if (url.pathname === '/api/graphql' && request.method === 'POST') {
+                // Proxy GraphQL requests to Amplify
+                return await handleGraphQLProxy(request, env);
+            }
+            if (url.pathname === '/mcp' && request.method === 'POST') {
+                // Handle MCP requests
+                const body = await request.json();
+                const response = await handleMcpRequest(body, env);
+                return new Response(JSON.stringify(response), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                    },
+                });
+            }
+            if (url.pathname === '/sse' && request.method === 'GET') {
+                // Handle SSE connections for MCP
+                return handleSSEConnection(request, env);
+            }
+            // Handle root path with SSE support
+            if (url.pathname === '/' && request.method === 'GET') {
+                const accept = request.headers.get('Accept');
+                if (accept && accept.includes('text/event-stream')) {
+                    return handleSSEConnection(request, env);
+                }
+            }
+            // Default response for unknown routes
+            return new Response(JSON.stringify({
+                message: 'AWS Amplify Data MCP Server - Worker Version',
+                endpoints: {
+                    health: '/health',
+                    graphql: '/api/graphql',
+                    mcp: '/mcp',
+                    sse: '/sse'
+                }
+            }), {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                },
+            });
+        }
+        catch (error) {
+            console.error('Worker error:', error);
+            return new Response(JSON.stringify({
+                error: 'Internal Server Error',
+                message: error instanceof Error ? error.message : String(error)
+            }), {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            });
+        }
+    },
+};
+// Handle SSE connections for MCP
+async function handleSSEConnection(request, env) {
+    // Check if the client accepts SSE
+    const accept = request.headers.get('Accept');
+    if (!accept || !accept.includes('text/event-stream')) {
+        return new Response('SSE not supported', {
+            status: 400,
+            headers: { 'Content-Type': 'text/plain' }
+        });
+    }
+    // Create SSE response headers
+    const headers = new Headers({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+    });
+    // Create a readable stream for SSE
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    // Send initial MCP protocol message
+    const initMessage = {
+        jsonrpc: "2.0",
+        method: "initialized",
+        params: {}
+    };
+    await writer.write(encoder.encode(`data: ${JSON.stringify(initMessage)}\n\n`));
+    // Handle MCP protocol over SSE
+    // For a full implementation, you'd need to parse incoming SSE data
+    // and route MCP requests accordingly
+    // Keep connection alive with periodic heartbeat
+    const heartbeat = setInterval(async () => {
+        try {
+            const heartbeatMessage = {
+                jsonrpc: "2.0",
+                method: "ping",
+                params: {}
+            };
+            await writer.write(encoder.encode(`data: ${JSON.stringify(heartbeatMessage)}\n\n`));
+        }
+        catch (error) {
+            clearInterval(heartbeat);
+        }
+    }, 30000); // 30 second heartbeat
+    // Close connection after 5 minutes to prevent indefinite connections
+    setTimeout(() => {
+        clearInterval(heartbeat);
+        writer.close();
+    }, 300000);
+    return new Response(readable, { headers });
+}
+// Handle GraphQL proxy requests
+async function handleGraphQLProxy(request, env) {
+    const apiUrl = env.AMPLIFY_API_URL;
+    const apiKey = env.AMPLIFY_API_KEY;
+    if (!apiUrl) {
+        return new Response(JSON.stringify({ error: 'AMPLIFY_API_URL not configured' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+    try {
+        const body = await request.text();
+        const headers = {
+            "Content-Type": "application/json",
+        };
+        // Add API key if available
+        if (apiKey) {
+            headers["x-api-key"] = apiKey;
+        }
+        // Forward authorization header if present
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader) {
+            headers["Authorization"] = authHeader;
+        }
+        const response = await fetch(apiUrl, {
+            method: "POST",
+            headers,
+            body,
+        });
+        const result = await response.text();
+        return new Response(result, {
+            status: response.status,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+            },
+        });
+    }
+    catch (error) {
+        console.error("Error proxying GraphQL request:", error);
+        return new Response(JSON.stringify({
+            error: 'GraphQL proxy error',
+            message: error instanceof Error ? error.message : String(error)
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+// Handle MCP protocol requests
+async function handleMcpRequest(mcpRequest, env) {
+    const { method, params } = mcpRequest;
+    switch (method) {
+        case 'initialize':
+            return {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                    resources: {},
+                    tools: {},
+                },
+                serverInfo: {
+                    name: 'amplify-data-api-worker',
+                    version: '1.0.0',
+                },
+            };
+        case 'resources/list':
+            return {
+                resources: [
+                    {
+                        uri: "amplify://api-info",
+                        name: "Amplify API Information",
+                        description: "Information about the Amplify Data API configuration",
+                        mimeType: "application/json",
+                    },
+                ],
+            };
+        case 'resources/read':
+            const { uri } = params;
+            if (uri === "amplify://api-info") {
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: "application/json",
+                            text: JSON.stringify({
+                                apiUrl: env.AMPLIFY_API_URL || 'not configured',
+                                region: env.AMPLIFY_REGION || 'us-east-1',
+                                hasApiKey: !!env.AMPLIFY_API_KEY,
+                                status: "configured"
+                            }, null, 2),
+                        },
+                    ],
+                };
+            }
+            throw new Error(`Unknown resource: ${uri}`);
+        case 'tools/list':
+            return {
+                tools: [
+                    {
+                        name: "query_amplify_api",
+                        description: "Execute a GraphQL query against the Amplify Data API",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: {
+                                    type: "string",
+                                    description: "The GraphQL query to execute",
+                                },
+                                variables: {
+                                    type: "object",
+                                    description: "Variables for the GraphQL query",
+                                },
+                            },
+                            required: ["query"],
+                        },
+                    },
+                    {
+                        name: "get_api_info",
+                        description: "Get information about the Amplify API configuration",
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                        },
+                    },
+                ],
+            };
+        case 'tools/call':
+            const { name, arguments: args } = params;
+            switch (name) {
+                case "query_amplify_api":
+                    return await executeGraphQLQuery(args.query, args.variables || {}, env);
+                case "get_api_info":
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify({
+                                    apiUrl: env.AMPLIFY_API_URL || 'not configured',
+                                    region: env.AMPLIFY_REGION || 'us-east-1',
+                                    hasApiKey: !!env.AMPLIFY_API_KEY,
+                                    worker: 'aws-amplify-data-mcp',
+                                    version: '1.0.0'
+                                }, null, 2),
+                            },
+                        ],
+                    };
+                default:
+                    throw new Error(`Unknown tool: ${name}`);
+            }
+        default:
+            throw new Error(`Unknown method: ${method}`);
+    }
+}
+// Helper function to execute GraphQL queries
+async function executeGraphQLQuery(query, variables = {}, env) {
+    const apiUrl = env.AMPLIFY_API_URL;
+    const apiKey = env.AMPLIFY_API_KEY;
+    if (!apiUrl) {
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: "Error: AMPLIFY_API_URL environment variable is not configured",
+                },
+            ],
+            isError: true,
+        };
+    }
+    const headers = {
+        "Content-Type": "application/json",
+    };
+    // Add API key if available
+    if (apiKey) {
+        headers["x-api-key"] = apiKey;
+    }
+    try {
+        const response = await fetch(apiUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                query,
+                variables,
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const result = await response.json();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(result, null, 2),
+                },
+            ],
+        };
+    }
+    catch (error) {
+        console.error("Error executing GraphQL query:", error);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+                },
+            ],
+            isError: true,
+        };
+    }
+}

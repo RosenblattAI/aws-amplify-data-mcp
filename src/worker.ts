@@ -62,13 +62,27 @@ export default {
         });
       }
 
+      if (url.pathname === '/sse' && request.method === 'GET') {
+        // Handle SSE connections for MCP
+        return handleSSEConnection(request, env);
+      }
+
+      // Handle root path with SSE support
+      if (url.pathname === '/' && request.method === 'GET') {
+        const accept = request.headers.get('Accept');
+        if (accept && accept.includes('text/event-stream')) {
+          return handleSSEConnection(request, env);
+        }
+      }
+
       // Default response for unknown routes
       return new Response(JSON.stringify({
         message: 'AWS Amplify Data MCP Server - Worker Version',
         endpoints: {
           health: '/health',
           graphql: '/api/graphql',
-          mcp: '/mcp'
+          mcp: '/mcp',
+          sse: '/sse'
         }
       }), {
         headers: { 
@@ -95,6 +109,67 @@ export default {
     }
   },
 };
+
+// Handle SSE connections for MCP
+async function handleSSEConnection(request: Request, env: Env): Promise<Response> {
+  // Check if the client accepts SSE
+  const accept = request.headers.get('Accept');
+  if (!accept || !accept.includes('text/event-stream')) {
+    return new Response('SSE not supported', { 
+      status: 400,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+  }
+
+  // Create SSE response headers
+  const headers = new Headers({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control',
+  });
+
+  // Create a readable stream for SSE
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  // Send initial MCP protocol message
+  const initMessage = {
+    jsonrpc: "2.0",
+    method: "initialized",
+    params: {}
+  };
+  
+  await writer.write(encoder.encode(`data: ${JSON.stringify(initMessage)}\n\n`));
+
+  // Handle MCP protocol over SSE
+  // For a full implementation, you'd need to parse incoming SSE data
+  // and route MCP requests accordingly
+  
+  // Keep connection alive with periodic heartbeat
+  const heartbeat = setInterval(async () => {
+    try {
+      const heartbeatMessage = {
+        jsonrpc: "2.0",
+        method: "ping",
+        params: {}
+      };
+      await writer.write(encoder.encode(`data: ${JSON.stringify(heartbeatMessage)}\n\n`));
+    } catch (error) {
+      clearInterval(heartbeat);
+    }
+  }, 30000); // 30 second heartbeat
+
+  // Close connection after 5 minutes to prevent indefinite connections
+  setTimeout(() => {
+    clearInterval(heartbeat);
+    writer.close();
+  }, 300000);
+
+  return new Response(readable, { headers });
+}
 
 // Handle GraphQL proxy requests
 async function handleGraphQLProxy(request: Request, env: Env): Promise<Response> {
