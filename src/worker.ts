@@ -22,8 +22,9 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control, X-Requested-With',
           'Access-Control-Max-Age': '86400',
+          'Access-Control-Expose-Headers': 'Content-Type',
         },
       });
     }
@@ -64,18 +65,24 @@ export default {
       }
 
       if (url.pathname === '/sse') {
+        console.log('SSE endpoint accessed:', request.method, request.headers.get('Accept'));
+        
         if (request.method === 'GET') {
           // Handle SSE connections for MCP
           return handleSSEConnection(request, env);
         } else if (request.method === 'POST') {
           // Handle MCP requests over HTTP on the SSE endpoint
           const body = await request.json();
+          console.log('MCP request received:', JSON.stringify(body, null, 2));
           const response = await handleMcpRequest(body, env);
+          console.log('MCP response:', JSON.stringify(response, null, 2));
           
           return new Response(JSON.stringify(response), {
             headers: {
               'Content-Type': 'application/json',
               'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
             },
           });
         }
@@ -91,7 +98,7 @@ export default {
 
       // Default response for unknown routes
       return new Response(JSON.stringify({
-        message: 'AWS Amplify Data MCP Server - Worker Version',
+        message: 'AWS Amplify Data MCP Server - Worker Version - UPDATED',
         endpoints: {
           health: '/health',
           graphql: '/api/graphql',
@@ -126,64 +133,51 @@ export default {
 
 // Handle SSE connections for MCP
 async function handleSSEConnection(request: Request, env: Env): Promise<Response> {
-  // Check if the client accepts SSE
-  const accept = request.headers.get('Accept');
-  if (!accept || !accept.includes('text/event-stream')) {
-    // If not requesting SSE, return an error in JSON-RPC format
-    return new Response(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32600,
-        message: "Invalid Request - SSE transport requires Accept: text/event-stream header"
-      },
-      id: null
-    }), { 
-      status: 400,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      }
-    });
-  }
-
-  // Create SSE response headers
+  console.log('SSE connection requested with headers:', request.headers.get('Accept'));
+  
+  // Create SSE response headers with proper CORS
   const headers = new Headers({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control, Accept',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
     'Access-Control-Expose-Headers': 'Content-Type',
   });
 
-  // Create a simple SSE stream
+  // Create a simple SSE stream that keeps the connection alive
   const encoder = new TextEncoder();
   
-  // Create response body with initial MCP protocol messages
-  const initMessage = JSON.stringify({
-    jsonrpc: "2.0",
-    method: "notifications/initialized",
-    params: {}
-  });
-
-  // Create a streaming response with multiple messages
+  // Create a streaming response that responds to MCP handshake
   const stream = new ReadableStream({
     start(controller) {
-      // Send initial message
-      controller.enqueue(encoder.encode(`data: ${initMessage}\n\n`));
+      console.log('SSE stream started');
       
-      // Send a ready message
-      const readyMessage = JSON.stringify({
-        jsonrpc: "2.0",
-        method: "notifications/message",
-        params: {
-          level: "info",
-          data: "MCP Server ready"
+      // Send heartbeat to keep connection alive
+      const heartbeat = () => {
+        try {
+          controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+        } catch (e) {
+          console.log('SSE heartbeat failed, connection closed');
         }
-      });
-      controller.enqueue(encoder.encode(`data: ${readyMessage}\n\n`));
+      };
       
-      // Keep connection open for now - close will happen when needed
+      // Send initial heartbeat immediately
+      heartbeat();
+      
+      // Set up periodic heartbeats every 30 seconds
+      const heartbeatInterval = setInterval(heartbeat, 30000);
+      
+      // Store interval to clear it later
+      (controller as any).heartbeatInterval = heartbeatInterval;
+    },
+    cancel() {
+      console.log('SSE stream cancelled');
+      // Clean up heartbeat when connection closes
+      if ((this as any).heartbeatInterval) {
+        clearInterval((this as any).heartbeatInterval);
+      }
     }
   });
 
