@@ -22,7 +22,8 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Cache-Control',
+          'Access-Control-Max-Age': '86400',
         },
       });
     }
@@ -151,7 +152,8 @@ async function handleSSEConnection(request: Request, env: Env): Promise<Response
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control',
+    'Access-Control-Allow-Headers': 'Cache-Control, Accept',
+    'Access-Control-Expose-Headers': 'Content-Type',
   });
 
   // Create a simple SSE stream
@@ -164,9 +166,28 @@ async function handleSSEConnection(request: Request, env: Env): Promise<Response
     params: {}
   });
 
-  const body = `data: ${initMessage}\n\n`;
+  // Create a streaming response with multiple messages
+  const stream = new ReadableStream({
+    start(controller) {
+      // Send initial message
+      controller.enqueue(encoder.encode(`data: ${initMessage}\n\n`));
+      
+      // Send a ready message
+      const readyMessage = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/message",
+        params: {
+          level: "info",
+          data: "MCP Server ready"
+        }
+      });
+      controller.enqueue(encoder.encode(`data: ${readyMessage}\n\n`));
+      
+      // Keep connection open for now - close will happen when needed
+    }
+  });
 
-  return new Response(body, { headers });
+  return new Response(stream, { headers });
 }
 
 // Handle GraphQL proxy requests
