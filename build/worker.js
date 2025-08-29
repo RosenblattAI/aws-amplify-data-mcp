@@ -44,9 +44,22 @@ export default {
                     },
                 });
             }
-            if (url.pathname === '/sse' && request.method === 'GET') {
-                // Handle SSE connections for MCP
-                return handleSSEConnection(request, env);
+            if (url.pathname === '/sse') {
+                if (request.method === 'GET') {
+                    // Handle SSE connections for MCP
+                    return handleSSEConnection(request, env);
+                }
+                else if (request.method === 'POST') {
+                    // Handle MCP requests over HTTP on the SSE endpoint
+                    const body = await request.json();
+                    const response = await handleMcpRequest(body, env);
+                    return new Response(JSON.stringify(response), {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*',
+                        },
+                    });
+                }
             }
             // Handle root path with SSE support
             if (url.pathname === '/' && request.method === 'GET') {
@@ -91,9 +104,20 @@ async function handleSSEConnection(request, env) {
     // Check if the client accepts SSE
     const accept = request.headers.get('Accept');
     if (!accept || !accept.includes('text/event-stream')) {
-        return new Response('SSE not supported', {
+        // If not requesting SSE, return an error in JSON-RPC format
+        return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+                code: -32600,
+                message: "Invalid Request - SSE transport requires Accept: text/event-stream header"
+            },
+            id: null
+        }), {
             status: 400,
-            headers: { 'Content-Type': 'text/plain' }
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+            }
         });
     }
     // Create SSE response headers
