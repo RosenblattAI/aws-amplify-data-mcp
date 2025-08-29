@@ -5,7 +5,11 @@
     "aws-amplify-data-mcp": "./build/index.js"
   },
   "scripts": {
-    "build": "tsc && chmod 775 build/index.js"
+    "build": "tsc && chmod 775 build/index.js",
+    "build:worker": "tsc --outDir worker-build --moduleResolution bundler --target es2022 --module es2022",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "publish": "npm run build:worker && wrangler deploy"
   },
   "files": [
     "build"
@@ -13,11 +17,11 @@
   "dependencies": {
     "@aws-amplify/auth": "^5.6.5",
     "@modelcontextprotocol/sdk": "^1.9.0",
-    "wrangler": "^4.33.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "wrangler": "^4.33.1"
   }
 }

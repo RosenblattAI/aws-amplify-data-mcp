@@ -1,0 +1,8 @@
+name = "aws-amplify-data-mcp"
+main = "src/worker.ts"
+compatibility_date = "2025-08-29"
+
+[vars]
+# Environment variables can be set here or via wrangler secret commands
+# AMPLIFY_API_URL = "your-amplify-api-url"
+# AMPLIFY_REGION = "us-east-1"
